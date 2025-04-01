@@ -34,6 +34,8 @@ namespace LinkedInEngagement.Models
         public string? LinkedinId { get; set; }
 
         public DateOnly? LinkedInRunDate { get; set; }
+
+        public bool? MarkettingClient { get; set; }
     }
 }
 

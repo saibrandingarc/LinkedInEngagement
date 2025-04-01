@@ -13,6 +13,7 @@ namespace LinkedInEngagement.Context
 
         // Define DbSets for your entities
         public DbSet<Settings> Settings { get; set; }
+        public DbSet<SocialSettings> SocialSettings { get; set; }
         public DbSet<ClientDetail> ClientDetails { get; set; }
         public DbSet<LinkedInPost> LinkedInPosts { get; set; }
         public DbSet<LinkedInPostsEngagement> LinkedInPostsEngagements { get; set; }

@@ -19,6 +19,7 @@ using LinkedInEngagement.Context;
 using System.Web;
 using System.Security.Policy;
 using System.Reflection.Metadata;
+using System.Globalization;
 ////using Org.BouncyCastle.Asn1.Ocsp;
 //using Google.Apis.Auth.OAuth2;
 //using Google.Ads.GoogleAds.Config;
@@ -71,7 +72,7 @@ namespace LinkedInEngagement
         }
 
         [Function("RunLinkedinPosts")]
-        public async Task RunLinkedinPosts([TimerTrigger("0 */15 * * * *")] TimerInfo myTimer)
+        public async Task RunLinkedinPosts([TimerTrigger("0 0 * * 0")] TimerInfo myTimer)
         {
             _logger.LogInformation($"C# RunLinkedinPosts function executed at: {DateTime.Now}");
             await GetLinkedinOrganizationPostEngagements();
@@ -240,7 +241,7 @@ namespace LinkedInEngagement
         {
             var today = DateOnly.FromDateTime(DateTime.Today);
             var clientData = await _context.ClientDetails
-                .Where(c => !string.IsNullOrEmpty(c.LinkedinId) && (c.LinkedInRunDate == null || c.LinkedInRunDate < today))
+                .Where(c => !string.IsNullOrEmpty(c.LinkedinId) && (c.LinkedInRunDate == null || c.LinkedInRunDate < today) && c.MarkettingClient == true)
                 .OrderBy(c => c.LinkedInRunDate)
                 .FirstOrDefaultAsync();
             if (clientData != null)
@@ -266,7 +267,7 @@ namespace LinkedInEngagement
                 while (start < totalRecords)
                 {
                     string requestUrl = $"{baseUrl}?q=owners&owners=urn:li:organization:{clientData.LinkedinId}&start={start}&count={count}";
-                    Console.WriteLine("requesturl :" + requestUrl);
+                    _logger.LogWarning("requesturl :" + requestUrl);
                     var request = new HttpRequestMessage(HttpMethod.Get, requestUrl);
 
                     try
@@ -493,36 +494,67 @@ namespace LinkedInEngagement
 
         public async Task<string> GetValidLinkedInTokenAsync()
         {
-            var settings = await _context.Settings
-                        .Where(p => p.tokenFrom == "linkedin")
-                        .OrderByDescending(p => p.DateAdded)
-                        .FirstOrDefaultAsync();
-
-            if (settings == null)
+            var socialSettings = await _context.SocialSettings
+                            .Where(c => c.TokenFrom == "LinkedIn")
+                            .ToListAsync();
+            if (socialSettings == null)
             {
                 return "Invalid Token";
             }
+            var accessToken = socialSettings.FirstOrDefault(c => c.TokenKey == "AccessToken");
+            var dateAddedSetting = socialSettings.FirstOrDefault(c => c.TokenKey == "DateAdded")?.TokenValue;
+            var expirationTimeStr = socialSettings.FirstOrDefault(c => c.TokenKey == "ExpiresIn")?.TokenValue;
+            var refreshToken = socialSettings.FirstOrDefault(c => c.TokenKey == "RefreshToken");
 
-            // Calculate expiration time
-            var expirationTime = settings.DateAdded.AddSeconds(settings.ExpiresIn);
-            Console.WriteLine(expirationTime);
-            Console.WriteLine(DateTime.UtcNow);
-            if (DateTime.UtcNow >= expirationTime)
+            // Parse DateAdded (assuming format "yyyy-MM-dd HH:mm:ss.fff")
+            DateTime dateAdded;
+            if (!DateTime.TryParseExact(dateAddedSetting, "yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out dateAdded))
             {
+                _logger.LogWarning("Error: Invalid DateAdded format."+dateAddedSetting);
+            }
+
+            // Parse ExpiresIn (assuming seconds)
+            if (!double.TryParse(expirationTimeStr, out double expirationTime))
+            {
+                _logger.LogWarning("Error: Invalid ExpiresIn value.");
+            }
+
+            // Add expiration time (assuming seconds)
+            DateTime expirationDateTime = dateAdded.AddSeconds(expirationTime);
+            _logger.LogInformation($"expTime: {expirationDateTime}");
+            _logger.LogInformation(DateTime.UtcNow.ToString());
+            // Compare with current UTC time
+            if (DateTime.UtcNow >= expirationDateTime)
+            {
+                _logger.LogWarning("Token Expired");
                 // Token has expired, regenerate using refresh token
-                var newToken = await RegenerateLinkedInTokenAsync(settings.RefreshToken);
-
+                var newToken = await RegenerateLinkedInTokenAsync(refreshToken.TokenValue);
+                _logger.LogInformation("newtoken : " + newToken);
                 // Update the token and date in the settings table
-                settings.AccessToken = newToken;
-                settings.DateAdded = DateTime.UtcNow;
+                var settings = await _context.SocialSettings
+                    .FirstOrDefaultAsync(c => c.TokenFrom == "LinkedIn" && c.TokenKey == "AccessToken");
 
-                await _context.SaveChangesAsync();
+                if (settings != null)
+                {
+                    settings.TokenValue = newToken;
+                    await _context.SaveChangesAsync();
+                }
+                var dateUpdate = await _context.SocialSettings
+                    .FirstOrDefaultAsync(c => c.TokenFrom == "LinkedIn" && c.TokenKey == "DateAdded");
+
+                if (dateUpdate != null)
+                {
+                    dateUpdate.TokenValue = DateTime.UtcNow.ToString();
+                    await _context.SaveChangesAsync();
+                }
 
                 return newToken;
             }
-
-            // Token is still valid
-            return settings.AccessToken;
+            else
+            {
+                _logger.LogInformation("Token Still Valid");
+            }
+            return accessToken.TokenValue;
         }
 
         // Method to regenerate the token using the refresh token
